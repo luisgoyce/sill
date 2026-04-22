@@ -649,23 +649,29 @@ def _max_consecutivo_por_prefijo(df, col_id, prefijo_completo):
 def generar_id_unico(nit_cliente, frente=None, id_usuario=None, tipo='vehiculo'):
     """
     Genera ID único para vehículos y llantas basado en id_cliente.
-    Formato vehículo: {id_cliente}_V{2 dígitos}  → TR01_V01
-    Formato llanta:   {id_cliente}_LL{2 dígitos}  → TR01_LL01
+    Formato vehículo: {id_cliente}_V{2 dígitos}           → TR01_V01
+    Formato llanta:   {id_cliente}_{frente}_LL{2 dígitos}  → TR01_BO_LL01
     """
+    import unicodedata
     id_cliente = obtener_id_cliente(nit_cliente)
 
     if tipo == 'vehiculo':
-        sufijo = '_V'
+        prefijo_completo = id_cliente + '_V'
         df_datos = leer_hoja(SHEET_VEHICULOS)
         col_id = 'id_vehiculo'
     else:
-        sufijo = '_LL'
+        if frente:
+            f_limpio = unicodedata.normalize('NFD', str(frente).upper())
+            f_limpio = ''.join(c for c in f_limpio if unicodedata.category(c) != 'Mn')
+            f_limpio = ''.join(c for c in f_limpio if c.isalpha())
+            frente_abbrev = f_limpio[:2] if len(f_limpio) >= 2 else f_limpio.ljust(2, 'X')
+        else:
+            frente_abbrev = 'GE'
+        prefijo_completo = f"{id_cliente}_{frente_abbrev}_LL"
         df_datos = leer_hoja(SHEET_LLANTAS)
         col_id = 'id_llanta'
 
-    prefijo_completo = id_cliente + sufijo
     max_num = _max_consecutivo_por_prefijo(df_datos, col_id, prefijo_completo)
-
     return f"{prefijo_completo}{max_num + 1:02d}"
 
 def generar_id_servicio(nit_cliente, frente=None):
@@ -1211,7 +1217,7 @@ def ver_llantas_disponibles():
         st.info("No tienes llantas accesibles")
         return
 
-    tab1, tab2, tab3 = st.tabs(["📋 Ver Todas", "✅ Aprobar Reencauches", "💰 Análisis de Costos"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Ver Todas", "✅ Aprobar Reencauches", "💰 Análisis de Costos", "💲 Asignación de Precios"])
 
     with tab1:
         st.subheader("Inventario Completo de Llantas")
@@ -1288,124 +1294,124 @@ def ver_llantas_disponibles():
     with tab2:
         st.subheader("✅ Aprobar Reencauches")
 
-        if not verificar_permiso(2):
-            return
-
-        llantas_reencauche = df_llantas[
-            (df_llantas['disponibilidad'] == 'reencauche') &
-            (df_llantas['estado_reencauche'] == 'condicionada_planta')
-        ]
-
-        if not llantas_reencauche.empty:
-            st.info(f"📋 **{len(llantas_reencauche)} llantas** pendientes de aprobación de planta de reencauche")
-
-            # Formulario de datos del reencauche
-            st.write("### Datos del Reencauche")
-            col_form1, col_form2, col_form3 = st.columns(3)
-
-            with col_form1:
-                marca_reencauche = st.text_input("🏭 Marca Reencauche", placeholder="Ej: Vipal, Bandag")
-            with col_form2:
-                referencia_reencauche = st.text_input("📋 Referencia", placeholder="Ej: VT120, BDR-AS")
-            with col_form3:
-                precio_reencauche = st.number_input("💰 Precio Reencauche", min_value=0.0, value=0.0, step=10000.0)
-
-            st.divider()
-            st.write("### Seleccionar Llantas a Aprobar")
-            st.caption("Marca las llantas que deseas aprobar con los datos ingresados arriba")
-
-            # Inicializar estado de selección si no existe
-            if 'llantas_seleccionadas' not in st.session_state:
-                st.session_state.llantas_seleccionadas = []
-
-            # Mostrar tabla con checkboxes
-            llantas_seleccionadas = []
-            for idx, row in llantas_reencauche.iterrows():
-                id_llanta = row['id_llanta']
-                marca_original = row.get('marca_llanta', 'N/A')
-                referencia_original = row.get('referencia', 'N/A')
-                dimension = row.get('dimension', 'N/A')
-                vida_val = row.get('vida_actual', row.get('vida', 1))
-                vida_actual = int(vida_val) if pd.notna(vida_val) else 1
-                vida_nueva = vida_actual + 1
-
-                col_check, col_info, col_vida = st.columns([0.5, 3, 1])
-
-                with col_check:
-                    seleccionada = st.checkbox("", key=f"sel_{id_llanta}", label_visibility="collapsed")
-                    if seleccionada:
-                        llantas_seleccionadas.append(id_llanta)
-
-                with col_info:
-                    st.write(f"**ID {id_llanta}** - {marca_original} {referencia_original} ({dimension})")
-
-                with col_vida:
-                    st.write(f"Vida {vida_actual} → **{vida_nueva}**")
-
-            st.divider()
-
-            # Botón de aprobación múltiple
-            col_btn1, col_btn2 = st.columns([1, 3])
-            with col_btn1:
-                aprobar_btn = st.button("✅ Aprobar Seleccionadas", type="primary", disabled=len(llantas_seleccionadas) == 0)
-
-            with col_btn2:
-                if len(llantas_seleccionadas) > 0:
-                    st.write(f"Se aprobarán **{len(llantas_seleccionadas)}** llantas")
-
-            if aprobar_btn:
-                if not marca_reencauche:
-                    st.error("⚠️ Debes ingresar la marca del reencauche")
-                elif not referencia_reencauche:
-                    st.error("⚠️ Debes ingresar la referencia del reencauche")
-                elif precio_reencauche <= 0:
-                    st.error("⚠️ Debes ingresar el precio del reencauche")
-                elif len(llantas_seleccionadas) == 0:
-                    st.error("⚠️ Debes seleccionar al menos una llanta")
-                else:
-                    df_todos = leer_hoja(SHEET_LLANTAS)
-                    aprobadas = 0
-
-                    for id_llanta in llantas_seleccionadas:
-                        llanta_row = llantas_reencauche[llantas_reencauche['id_llanta'] == id_llanta].iloc[0]
-                        # Usar vida_actual o vida según la columna disponible
-                        vida_col = 'vida_actual' if 'vida_actual' in llanta_row.index else 'vida'
-                        vida_actual = int(llanta_row[vida_col]) if pd.notna(llanta_row.get(vida_col)) else 1
-                        vida_nueva = vida_actual + 1
-
-                        # Guardar marca y referencia del reencauche
-                        marca_ref_reencauche = f"{marca_reencauche} - {referencia_reencauche}"
-                        if vida_nueva == 2:
-                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'reencauche1'] = marca_ref_reencauche
-                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'precio_vida2'] = precio_reencauche
-                        elif vida_nueva == 3:
-                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'reencauche2'] = marca_ref_reencauche
-                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'precio_vida3'] = precio_reencauche
-                        elif vida_nueva == 4:
-                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'reencauche3'] = marca_ref_reencauche
-                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'precio_vida4'] = precio_reencauche
-
-                        df_todos.loc[df_todos['id_llanta'] == id_llanta, 'vida_actual'] = vida_nueva
-                        df_todos.loc[df_todos['id_llanta'] == id_llanta, 'estado_reencauche'] = 'aprobado'
-                        df_todos.loc[df_todos['id_llanta'] == id_llanta, 'disponibilidad'] = 'recambio'
-                        df_todos.loc[df_todos['id_llanta'] == id_llanta, 'fecha_modificacion'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                        # Crear movimiento de aprobación de reencauche
-                        crear_movimiento(
-                            id_llanta=id_llanta,
-                            tipo='aprobacion_reencauche',
-                            vida=vida_nueva,
-                            marca_reencauche=marca_reencauche,
-                            ref_reencauche=referencia_reencauche,
-                            precio_reencauche=precio_reencauche
-                        )
-                        aprobadas += 1
-
-                    escribir_hoja(SHEET_LLANTAS, df_todos)
-                    st.success(f"✅ {aprobadas} llantas aprobadas - Marca: {marca_reencauche}, Ref: {referencia_reencauche}, Precio: ${precio_reencauche:,.0f}")
-                    st.rerun()
+        if st.session_state.get('nivel', 99) != 1:
+            st.warning("⚠️ Solo el administrador puede aprobar reencauches")
         else:
-            st.info("✨ No hay llantas pendientes de aprobación de reencauche")
+            llantas_reencauche = df_llantas[
+                (df_llantas['disponibilidad'] == 'reencauche') &
+                (df_llantas['estado_reencauche'] == 'condicionada_planta')
+            ]
+
+            if not llantas_reencauche.empty:
+                st.info(f"📋 **{len(llantas_reencauche)} llantas** pendientes de aprobación de planta de reencauche")
+
+                # Formulario de datos del reencauche
+                st.write("### Datos del Reencauche")
+                col_form1, col_form2, col_form3 = st.columns(3)
+
+                with col_form1:
+                    marca_reencauche = st.text_input("🏭 Marca Reencauche", placeholder="Ej: Vipal, Bandag")
+                with col_form2:
+                    referencia_reencauche = st.text_input("📋 Referencia", placeholder="Ej: VT120, BDR-AS")
+                with col_form3:
+                    precio_reencauche = st.number_input("💰 Precio Reencauche", min_value=0.0, value=0.0, step=10000.0)
+
+                st.divider()
+                st.write("### Seleccionar Llantas a Aprobar")
+                st.caption("Marca las llantas que deseas aprobar con los datos ingresados arriba")
+
+                # Inicializar estado de selección si no existe
+                if 'llantas_seleccionadas' not in st.session_state:
+                    st.session_state.llantas_seleccionadas = []
+
+                # Mostrar tabla con checkboxes
+                llantas_seleccionadas = []
+                for idx, row in llantas_reencauche.iterrows():
+                    id_llanta = row['id_llanta']
+                    marca_original = row.get('marca_llanta', 'N/A')
+                    referencia_original = row.get('referencia', 'N/A')
+                    dimension = row.get('dimension', 'N/A')
+                    vida_val = row.get('vida_actual', row.get('vida', 1))
+                    vida_actual = int(vida_val) if pd.notna(vida_val) else 1
+                    vida_nueva = vida_actual + 1
+
+                    col_check, col_info, col_vida = st.columns([0.5, 3, 1])
+
+                    with col_check:
+                        seleccionada = st.checkbox("", key=f"sel_{id_llanta}", label_visibility="collapsed")
+                        if seleccionada:
+                            llantas_seleccionadas.append(id_llanta)
+
+                    with col_info:
+                        st.write(f"**ID {id_llanta}** - {marca_original} {referencia_original} ({dimension})")
+
+                    with col_vida:
+                        st.write(f"Vida {vida_actual} → **{vida_nueva}**")
+
+                st.divider()
+
+                # Botón de aprobación múltiple
+                col_btn1, col_btn2 = st.columns([1, 3])
+                with col_btn1:
+                    aprobar_btn = st.button("✅ Aprobar Seleccionadas", type="primary", disabled=len(llantas_seleccionadas) == 0)
+
+                with col_btn2:
+                    if len(llantas_seleccionadas) > 0:
+                        st.write(f"Se aprobarán **{len(llantas_seleccionadas)}** llantas")
+
+                if aprobar_btn:
+                    if not marca_reencauche:
+                        st.error("⚠️ Debes ingresar la marca del reencauche")
+                    elif not referencia_reencauche:
+                        st.error("⚠️ Debes ingresar la referencia del reencauche")
+                    elif precio_reencauche <= 0:
+                        st.error("⚠️ Debes ingresar el precio del reencauche")
+                    elif len(llantas_seleccionadas) == 0:
+                        st.error("⚠️ Debes seleccionar al menos una llanta")
+                    else:
+                        df_todos = leer_hoja(SHEET_LLANTAS)
+                        aprobadas = 0
+
+                        for id_llanta in llantas_seleccionadas:
+                            llanta_row = llantas_reencauche[llantas_reencauche['id_llanta'] == id_llanta].iloc[0]
+                            # Usar vida_actual o vida según la columna disponible
+                            vida_col = 'vida_actual' if 'vida_actual' in llanta_row.index else 'vida'
+                            vida_actual = int(llanta_row[vida_col]) if pd.notna(llanta_row.get(vida_col)) else 1
+                            vida_nueva = vida_actual + 1
+
+                            # Guardar marca y referencia del reencauche
+                            marca_ref_reencauche = f"{marca_reencauche} - {referencia_reencauche}"
+                            if vida_nueva == 2:
+                                df_todos.loc[df_todos['id_llanta'] == id_llanta, 'reencauche1'] = marca_ref_reencauche
+                                df_todos.loc[df_todos['id_llanta'] == id_llanta, 'precio_vida2'] = precio_reencauche
+                            elif vida_nueva == 3:
+                                df_todos.loc[df_todos['id_llanta'] == id_llanta, 'reencauche2'] = marca_ref_reencauche
+                                df_todos.loc[df_todos['id_llanta'] == id_llanta, 'precio_vida3'] = precio_reencauche
+                            elif vida_nueva == 4:
+                                df_todos.loc[df_todos['id_llanta'] == id_llanta, 'reencauche3'] = marca_ref_reencauche
+                                df_todos.loc[df_todos['id_llanta'] == id_llanta, 'precio_vida4'] = precio_reencauche
+
+                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'vida_actual'] = vida_nueva
+                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'estado_reencauche'] = 'aprobado'
+                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'disponibilidad'] = 'recambio'
+                            df_todos.loc[df_todos['id_llanta'] == id_llanta, 'fecha_modificacion'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                            # Crear movimiento de aprobación de reencauche
+                            crear_movimiento(
+                                id_llanta=id_llanta,
+                                tipo='aprobacion_reencauche',
+                                vida=vida_nueva,
+                                marca_reencauche=marca_reencauche,
+                                ref_reencauche=referencia_reencauche,
+                                precio_reencauche=precio_reencauche
+                            )
+                            aprobadas += 1
+
+                        escribir_hoja(SHEET_LLANTAS, df_todos)
+                        st.success(f"✅ {aprobadas} llantas aprobadas - Marca: {marca_reencauche}, Ref: {referencia_reencauche}, Precio: ${precio_reencauche:,.0f}")
+                        st.rerun()
+            else:
+                st.info("✨ No hay llantas pendientes de aprobación de reencauche")
     
     with tab3:
         st.subheader("💰 Análisis de Costos por Kilómetro")
@@ -1469,13 +1475,62 @@ def ver_llantas_disponibles():
                 st.info("Sin datos suficientes")
         
         st.divider()
-        
+
         # Costo acumulado
         costo_acumulado = calcular_costo_km_acumulado(id_llanta_analisis)
         if costo_acumulado:
             st.success(f"**Costo/km Acumulado Total:** ${costo_acumulado:,.2f}")
         else:
             st.info("No hay suficientes datos de servicios para calcular el costo/km acumulado")
+
+    with tab4:
+        st.subheader("💲 Asignación de Precios")
+
+        if st.session_state.get('nivel', 99) != 1:
+            st.warning("⚠️ Solo el administrador puede asignar precios")
+        else:
+            st.info("Edita los precios directamente en la tabla y presiona **Guardar Cambios**.")
+
+            cols_precio = ['id_llanta', 'nit_cliente', 'marca_llanta', 'referencia', 'dimension',
+                           'precio_vida1', 'precio_vida2', 'precio_vida3', 'precio_vida4']
+            cols_disponibles = [c for c in cols_precio if c in df_llantas.columns]
+            df_precios = df_llantas[cols_disponibles].copy()
+
+            for col in ['precio_vida1', 'precio_vida2', 'precio_vida3', 'precio_vida4']:
+                if col in df_precios.columns:
+                    df_precios[col] = pd.to_numeric(df_precios[col], errors='coerce').fillna(0)
+
+            column_config = {
+                'id_llanta':    st.column_config.TextColumn("ID Llanta",   disabled=True),
+                'nit_cliente':  st.column_config.TextColumn("NIT Cliente", disabled=True),
+                'marca_llanta': st.column_config.TextColumn("Marca",       disabled=True),
+                'referencia':   st.column_config.TextColumn("Referencia",  disabled=True),
+                'dimension':    st.column_config.TextColumn("Dimensión",   disabled=True),
+                'precio_vida1': st.column_config.NumberColumn("Precio Vida 1", min_value=0, format="$ %d"),
+                'precio_vida2': st.column_config.NumberColumn("Precio Vida 2", min_value=0, format="$ %d"),
+                'precio_vida3': st.column_config.NumberColumn("Precio Vida 3", min_value=0, format="$ %d"),
+                'precio_vida4': st.column_config.NumberColumn("Precio Vida 4", min_value=0, format="$ %d"),
+            }
+
+            edited_df = st.data_editor(
+                df_precios,
+                column_config=column_config,
+                hide_index=True,
+                use_container_width=True,
+                key="editor_precios"
+            )
+
+            if st.button("💾 Guardar Cambios de Precios", type="primary"):
+                df_todos = leer_hoja_fresco(SHEET_LLANTAS)
+                for _, row in edited_df.iterrows():
+                    id_llanta = row['id_llanta']
+                    for col in ['precio_vida1', 'precio_vida2', 'precio_vida3', 'precio_vida4']:
+                        if col in edited_df.columns:
+                            df_todos.loc[df_todos['id_llanta'] == id_llanta, col] = row[col]
+                df_todos['fecha_modificacion'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                escribir_hoja(SHEET_LLANTAS, df_todos)
+                st.success("✅ Precios actualizados exitosamente")
+                st.rerun()
 
 # Continuará en la siguiente parte debido a límite de caracteres...
 
@@ -1743,8 +1798,6 @@ def crear_llantas():
             id_llanta_usuario = st.text_input("ID Llanta (opcional)", placeholder="Ej: L01, 123, etc.")
             st.caption("💡 El sistema generará un ID único: [Cliente][Frente][Consecutivo]_[Tu ID]")
 
-            precio_vida1 = st.number_input("Precio Vida 1 (Nueva)", min_value=0.0, value=1500000.0, step=10000.0)
-
         if st.button("💾 Registrar Llanta", type="primary"):
             if not dimension or not referencia or not marca_llanta:
                 st.error("Debes completar todos los campos")
@@ -1752,11 +1805,8 @@ def crear_llantas():
                 # Leer datos frescos SIN caché para verificar duplicados
                 df_llantas = leer_hoja_fresco(SHEET_LLANTAS)
 
-                # Obtener el frente (puede venir de selectbox o text_input)
-                frente_final = frente_llanta if 'frente_llanta' in dir() else "General"
-
-                # Generar ID único para la llanta
-                id_llanta = generar_id_unico(cliente_seleccionado, tipo='llanta')
+                # Generar ID único para la llanta incluyendo el frente
+                id_llanta = generar_id_unico(cliente_seleccionado, frente=frente_llanta, tipo='llanta')
                 # Anexar ID opcional del usuario si fue proporcionado
                 if id_llanta_usuario and id_llanta_usuario.strip():
                     id_llanta = f"{id_llanta}_{id_llanta_usuario.strip()}"
@@ -1775,7 +1825,7 @@ def crear_llantas():
                     'placa_actual': '',
                     'posicion_actual': '',
                     'estado_reencauche': '',
-                    'precio_vida1': precio_vida1,
+                    'precio_vida1': 0,
                     'reencauche1': '',
                     'precio_vida2': 0,
                     'reencauche2': '',
