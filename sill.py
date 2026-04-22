@@ -1876,7 +1876,7 @@ def montaje_llantas(embedded=False):
         if not verificar_permiso(3):
             return
 
-    df_llantas = leer_hoja(SHEET_LLANTAS)
+    df_llantas = leer_hoja_fresco(SHEET_LLANTAS)
     df_vehiculos = leer_hoja(SHEET_VEHICULOS)
 
     clientes_acceso = obtener_clientes_accesibles()
@@ -1999,7 +1999,24 @@ def montaje_llantas(embedded=False):
         elif kilometraje <= 0:
             st.error("Debes ingresar el kilometraje actual del vehículo")
         else:
-            df_llantas = leer_hoja(SHEET_LLANTAS)
+            df_llantas = leer_hoja_fresco(SHEET_LLANTAS)
+
+            # Re-verificar ocupación con datos frescos antes de montar
+            col_placa_fresh = 'placa_actual' if 'placa_actual' in df_llantas.columns else 'placa_vehiculo'
+            col_pos_fresh = 'posicion_actual' if 'posicion_actual' in df_llantas.columns else 'pos_final'
+            llantas_fresh = df_llantas[
+                (df_llantas['disponibilidad'] == 'al_piso') &
+                (df_llantas[col_placa_fresh].astype(str) == str(placa_vehiculo))
+            ]
+            for _, row_f in llantas_fresh.iterrows():
+                pos_raw_f = row_f.get(col_pos_fresh, '')
+                try:
+                    p_f = str(int(float(pos_raw_f)))
+                except (ValueError, TypeError):
+                    p_f = str(pos_raw_f).strip().upper() if not pd.isna(pos_raw_f) else ''
+                if p_f and p_f not in ('nan', '') and p_f == posicion_normalizada:
+                    st.error(f"⚠️ La posición **{posicion_normalizada}** fue ocupada recientemente por la llanta **{row_f['id_llanta']}**. No se puede montar.")
+                    st.stop()
 
             # Obtener vida actual de la llanta
             vida_actual = df_llantas.loc[df_llantas['id_llanta'] == id_llanta, 'vida_actual'].values[0] if 'vida_actual' in df_llantas.columns else 1
@@ -2166,10 +2183,19 @@ def registrar_servicios(embedded=False):
     else:
         info_ultimo = "  \nSin servicios previos registrados"
 
+    pos_prefill = str(posicion_actual).strip() if pd.notna(posicion_actual) and str(posicion_actual).strip().lower() != 'nan' else ''
     st.info(
         f"**Llanta:** {id_llanta} | **Marca:** {marca_ll} | **Ref:** {ref_ll} | **Dimensión:** {dim_ll}  \n"
-        f"**Posición:** {posicion_actual} | **Vida:** {vida_actual} | **Disponibilidad:** {disp_ll}"
+        f"**Posición actual:** {pos_prefill or 'Sin asignar'} | **Vida:** {vida_actual} | **Disponibilidad:** {disp_ll}"
         f"{info_ultimo}"
+    )
+
+    posicion_input = st.text_input(
+        "📍 Posición de la llanta (obligatorio)",
+        value=pos_prefill,
+        key="srv_posicion",
+        placeholder="Ej: DI, DD, TI1",
+        help="Confirma o corrige la posición actual. Se actualizará en la ficha de la llanta."
     )
 
     with col2:
@@ -2205,8 +2231,12 @@ def registrar_servicios(embedded=False):
         operario = st.text_input("👷 Operario", placeholder="No hay operarios asignados a este cliente", key="srv_operario_txt")
 
     if st.button("💾 Registrar Servicio", type="primary", key="srv_btn_registrar"):
+        if not posicion_input or not posicion_input.strip():
+            st.error("⚠️ Debes ingresar la posición de la llanta para registrar el servicio")
+            st.stop()
+
         df_servicios = leer_hoja(SHEET_SERVICIOS)
-        df_llantas = leer_hoja(SHEET_LLANTAS)
+        df_llantas = leer_hoja_fresco(SHEET_LLANTAS)
         df_vehiculos = leer_hoja(SHEET_VEHICULOS)
 
         llanta_data = df_llantas[df_llantas['id_llanta'] == id_llanta]
@@ -2217,7 +2247,7 @@ def registrar_servicios(embedded=False):
         llanta_data = llanta_data.iloc[0]
         placa = llanta_data.get('placa_actual', llanta_data.get('placa_vehiculo', ''))
         nit_cliente = llanta_data['nit_cliente']
-        posicion = llanta_data.get('posicion_actual', llanta_data.get('pos_final', ''))
+        posicion = posicion_input.strip()
         vida = llanta_data.get('vida_actual', llanta_data.get('vida', 1))
         disponibilidad = llanta_data.get('disponibilidad', '')
 
@@ -2276,20 +2306,24 @@ def registrar_servicios(embedded=False):
         df_servicios = pd.concat([df_servicios, nuevo_servicio], ignore_index=True)
         escribir_hoja(SHEET_SERVICIOS, df_servicios)
 
-        # Si hubo regrabación, incrementar contador en llantas
+        # Actualizar posición en llantas (siempre) y regrabaciones si aplica
+        df_llantas_update = leer_hoja_fresco(SHEET_LLANTAS)
+        df_llantas_update.loc[df_llantas_update['id_llanta'] == id_llanta, 'posicion_actual'] = posicion
+        df_llantas_update.loc[df_llantas_update['id_llanta'] == id_llanta, 'fecha_modificacion'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        regrabaciones_nuevo = None
         if regrabacion:
-            df_llantas_update = leer_hoja(SHEET_LLANTAS)
             regrabaciones_actual = df_llantas_update.loc[df_llantas_update['id_llanta'] == id_llanta, 'total_regrabaciones'].values
             regrabaciones_actual = int(regrabaciones_actual[0]) if len(regrabaciones_actual) > 0 and pd.notna(regrabaciones_actual[0]) else 0
-            df_llantas_update.loc[df_llantas_update['id_llanta'] == id_llanta, 'total_regrabaciones'] = regrabaciones_actual + 1
-            escribir_hoja(SHEET_LLANTAS, df_llantas_update)
+            regrabaciones_nuevo = regrabaciones_actual + 1
+            df_llantas_update.loc[df_llantas_update['id_llanta'] == id_llanta, 'total_regrabaciones'] = regrabaciones_nuevo
+        escribir_hoja(SHEET_LLANTAS, df_llantas_update)
 
         # ACTUALIZAR COSTOS/KM AUTOMÁTICAMENTE
         actualizar_costos_km_llanta(id_llanta)
 
         st.success(f"✅ Servicio {id_servicio} registrado exitosamente para llanta ID {id_llanta}")
         if regrabacion:
-            st.info(f"🔧 Regrabación registrada. Total regrabaciones: {regrabaciones_actual + 1}")
+            st.info(f"🔧 Regrabación registrada. Total regrabaciones: {regrabaciones_nuevo}")
         st.info("💡 Los costos/km se han actualizado automáticamente")
 
         st.session_state['servicio_completado'] = True
@@ -2767,7 +2801,7 @@ def registrar_alineacion(embedded=False):
 def rotacion_completa():
     """Función para realizar rotación completa de llantas en un vehículo"""
 
-    df_llantas = leer_hoja(SHEET_LLANTAS)
+    df_llantas = leer_hoja_fresco(SHEET_LLANTAS)
     df_vehiculos = leer_hoja(SHEET_VEHICULOS)
 
     clientes_acceso = obtener_clientes_accesibles()
@@ -2839,36 +2873,46 @@ def rotacion_completa():
     st.subheader("📍 Asignar nuevas posiciones")
     st.caption("Ingresa la nueva posición para cada llanta. Deja igual si no se mueve.")
 
-    # Normalizar posiciones actuales
+    # Normalizar posiciones actuales (evita "nan" cuando no hay posición guardada)
     nuevas_posiciones = {}
     posiciones_actuales = {}
     for _, row in llantas_vehiculo.iterrows():
         id_ll = str(row['id_llanta'])
         pos_raw = row.get(col_pos, '')
-        try:
-            pos_actual = str(int(float(pos_raw)))
-        except (ValueError, TypeError):
-            pos_actual = str(pos_raw).strip()
+        if pd.isna(pos_raw) or str(pos_raw).strip().lower() in ('nan', ''):
+            pos_actual = ''
+        else:
+            try:
+                pos_actual = str(int(float(pos_raw)))
+            except (ValueError, TypeError):
+                pos_actual = str(pos_raw).strip()
         posiciones_actuales[id_ll] = pos_actual
 
     # Crear inputs para cada llanta
-    cols_header = st.columns([2, 2, 2, 2])
+    cols_header = st.columns([2, 2, 1, 2, 2])
     cols_header[0].write("**ID Llanta**")
     cols_header[1].write("**Marca / Dim.**")
-    cols_header[2].write("**Pos. Actual**")
-    cols_header[3].write("**Nueva Posición**")
+    cols_header[2].write("**Km montaje**")
+    cols_header[3].write("**Pos. Actual**")
+    cols_header[4].write("**Nueva Posición**")
 
     for _, row in llantas_vehiculo.iterrows():
         id_ll = str(row['id_llanta'])
         pos_actual = posiciones_actuales[id_ll]
         marca = row.get('marca_llanta', '')
         dimension = row.get('dimension', '')
+        km_raw = row.get('km_ultimo_montaje', None)
+        try:
+            km_txt = f"{int(float(km_raw)):,}" if pd.notna(km_raw) and str(km_raw).strip().lower() != 'nan' else 'N/A'
+        except (ValueError, TypeError):
+            km_txt = 'N/A'
 
-        cols = st.columns([2, 2, 2, 2])
+        cols = st.columns([2, 2, 1, 2, 2])
         cols[0].write(f"`{id_ll}`")
         cols[1].write(f"{marca} {dimension}")
-        cols[2].write(f"**{pos_actual}**")
-        nueva_pos = cols[3].text_input(
+        cols[2].write(km_txt)
+        cols[3].write(f"**{pos_actual}**" if pos_actual else "⚠️ *sin pos.*")
+        nueva_pos = cols[4].text_input(
             "Nueva pos.", value=pos_actual, key=f"rot_pos_{id_ll}",
             label_visibility="collapsed"
         )
