@@ -1,2 +1,22 @@
 __pycache__/
 *.pyc
+*.pyo
+
+# Secrets (NUNCA subir)
+.streamlit/secrets.toml
+
+# Data/migration files
+data/
+*.xlsx
+*.xls
+
+# Virtual environments
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Utilities internas
+utils_lg/

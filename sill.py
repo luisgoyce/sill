@@ -3,9 +3,9 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import json
-from streamlit_gsheets import GSheetsConnection
+from db import leer_hoja, leer_hoja_fresco, escribir_hoja, get_supabase_client
 
-# Nombres de las hojas en Google Sheets
+# Nombres de las tablas (compatibilidad con código existente)
 SHEET_CLIENTES = "clientes"
 SHEET_VEHICULOS = "vehiculos"
 SHEET_LLANTAS = "llantas"
@@ -148,14 +148,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ============= CONEXIÓN A GOOGLE SHEETS =============
-# URL del spreadsheet
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1H05kURh2Lbo6C1rvOW4RyBNM8fyPFrlHqoT-U0TkCqE"
-
-@st.cache_resource
-def get_gsheets_connection():
-    """Obtiene la conexión a Google Sheets con Service Account"""
-    return st.connection("gsheets", type=GSheetsConnection)
+# ============= FUNCIONES AUXILIARES DE LIMPIEZA =============
 
 def limpiar_clientes_asignados(valor):
     """Convierte clientes_asignados a string limpio, manejando floats y múltiples NITs"""
@@ -225,88 +218,6 @@ def generar_id_usuario(nombre, df_usuarios):
 
     return nuevo_id
 
-def leer_hoja(nombre_hoja):
-    """Lee una hoja de Google Sheets y retorna un DataFrame"""
-    try:
-        conn = get_gsheets_connection()
-        df = conn.read(
-            spreadsheet=SPREADSHEET_URL,
-            worksheet=nombre_hoja,
-            ttl=300
-        )
-        if df is None or df.empty:
-            return pd.DataFrame()
-        # Eliminar filas completamente vacías
-        df = df.dropna(how='all')
-        # Convertir columnas NIT a string (evitar decimales como 1234567890.0)
-        for col in ['nit', 'nit_cliente']:
-            if col in df.columns:
-                df[col] = df[col].apply(lambda x: str(int(x)) if pd.notna(x) and isinstance(x, (int, float)) else str(x) if pd.notna(x) else '')
-        # Convertir clientes_asignados a string limpio (manejar floats como 123456789.0)
-        if 'clientes_asignados' in df.columns:
-            df['clientes_asignados'] = df['clientes_asignados'].apply(limpiar_clientes_asignados)
-        # Normalizar todas las columnas ID a string
-        df = normalizar_columnas_id(df)
-        return df
-    except Exception as e:
-        st.error(f"Error leyendo {nombre_hoja}: {str(e)}")
-        return pd.DataFrame()
-
-def leer_hoja_fresco(nombre_hoja):
-    """Lee una hoja de Google Sheets SIN caché - para verificaciones críticas"""
-    try:
-        conn = get_gsheets_connection()
-        df = conn.read(
-            spreadsheet=SPREADSHEET_URL,
-            worksheet=nombre_hoja,
-            ttl=0
-        )
-        if df is None or df.empty:
-            return pd.DataFrame()
-        df = df.dropna(how='all')
-        # Convertir columnas NIT a string (evitar decimales como 1234567890.0)
-        for col in ['nit', 'nit_cliente']:
-            if col in df.columns:
-                df[col] = df[col].apply(lambda x: str(int(x)) if pd.notna(x) and isinstance(x, (int, float)) else str(x) if pd.notna(x) else '')
-        # Convertir clientes_asignados a string limpio
-        if 'clientes_asignados' in df.columns:
-            df['clientes_asignados'] = df['clientes_asignados'].apply(limpiar_clientes_asignados)
-        # Normalizar todas las columnas ID a string
-        df = normalizar_columnas_id(df)
-        return df
-    except Exception as e:
-        st.error(f"Error leyendo {nombre_hoja}: {str(e)}")
-        return pd.DataFrame()
-
-def escribir_hoja(nombre_hoja, df):
-    """Escribe un DataFrame a una hoja de Google Sheets y retorna datos frescos"""
-    try:
-        conn = get_gsheets_connection()
-        conn.update(
-            spreadsheet=SPREADSHEET_URL,
-            worksheet=nombre_hoja,
-            data=df
-        )
-        # Leer datos frescos inmediatamente después de escribir
-        df_fresco = conn.read(
-            spreadsheet=SPREADSHEET_URL,
-            worksheet=nombre_hoja,
-            ttl=0
-        )
-        if df_fresco is not None:
-            df_fresco = df_fresco.dropna(how='all')
-            # Convertir columnas NIT a string (evitar decimales como 1234567890.0)
-            for col in ['nit', 'nit_cliente']:
-                if col in df_fresco.columns:
-                    df_fresco[col] = df_fresco[col].apply(lambda x: str(int(x)) if pd.notna(x) and isinstance(x, (int, float)) else str(x) if pd.notna(x) else '')
-            # Convertir clientes_asignados a string limpio
-            if 'clientes_asignados' in df_fresco.columns:
-                df_fresco['clientes_asignados'] = df_fresco['clientes_asignados'].apply(limpiar_clientes_asignados)
-        return df_fresco if df_fresco is not None else df
-    except Exception as e:
-        st.error(f"Error escribiendo en {nombre_hoja}: {str(e)}")
-        return None
-
 def filtrar_por_clientes(df, columna_nit, clientes_acceso):
     """Filtra un DataFrame por clientes accesibles de forma segura"""
     if df.empty or columna_nit not in df.columns:
@@ -325,10 +236,8 @@ def crear_movimiento(id_llanta, tipo, vida, placa_vehiculo='', posicion='', kilo
                      nueva_disponibilidad='', marca_reencauche='', ref_reencauche='',
                      precio_reencauche=0, observaciones='', orden_trabajo='', planilla='', operario='',
                      nit_cliente=''):
-    """Crea un nuevo registro en la hoja de movimientos"""
+    """Crea un nuevo registro de movimiento (se inserta en la tabla servicios)"""
     try:
-        df_movimientos = leer_hoja(SHEET_MOVIMIENTOS)
-
         # Obtener nit_cliente de la llanta si no se proporcionó
         if not nit_cliente:
             df_llantas_mov = leer_hoja(SHEET_LLANTAS)
@@ -341,28 +250,29 @@ def crear_movimiento(id_llanta, tipo, vida, placa_vehiculo='', posicion='', kilo
         # Obtener usuario actual
         usuario_actual = st.session_state.get('usuario', 'sistema')
 
-        nuevo_movimiento = pd.DataFrame([{
-            'id_movimiento': nuevo_id,
-            'orden_trabajo': orden_trabajo,
-            'planilla': planilla,
+        # Insertar directamente en servicios (movimientos = servicios con tipo de movimiento)
+        sb = get_supabase_client()
+        registro = {
+            'id_servicio': nuevo_id,
+            'orden_trabajo': orden_trabajo or '',
+            'planilla': planilla or '',
+            'fecha': datetime.now().strftime("%Y-%m-%d"),
             'id_llanta': id_llanta,
-            'fecha': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'tipo': tipo,
-            'vida': vida,
-            'placa_vehiculo': placa_vehiculo,
-            'posicion': posicion,
-            'kilometraje': kilometraje,
-            'nueva_disponibilidad': nueva_disponibilidad,
-            'marca_reencauche': marca_reencauche,
-            'ref_reencauche': ref_reencauche,
-            'precio_reencauche': precio_reencauche,
-            'observaciones': observaciones,
-            'operario': operario,
-            'usuario': usuario_actual
-        }])
-
-        df_movimientos = pd.concat([df_movimientos, nuevo_movimiento], ignore_index=True)
-        escribir_hoja(SHEET_MOVIMIENTOS, df_movimientos)
+            'placa_vehiculo': placa_vehiculo or '',
+            'posicion': str(posicion) if posicion else '',
+            'vida': int(vida) if vida else 1,
+            'tipo_servicio': tipo,
+            'kilometraje': float(kilometraje) if kilometraje else 0,
+            'nueva_disponibilidad': nueva_disponibilidad or '',
+            'marca_reencauche': marca_reencauche or '',
+            'ref_reencauche': ref_reencauche or '',
+            'precio_reencauche': float(precio_reencauche) if precio_reencauche else 0,
+            'observaciones': observaciones or '',
+            'operario': operario or '',
+            'usuario_registro': usuario_actual,
+            'timestamp': datetime.now().isoformat()
+        }
+        sb.table('servicios').insert(registro).execute()
         return True
     except Exception as e:
         st.error(f"Error creando movimiento: {str(e)}")
@@ -375,10 +285,10 @@ def inicializar_datos():
     df_usuarios = leer_hoja(SHEET_USUARIOS)
     if df_usuarios.empty:
         usuarios_default = pd.DataFrame([
-            {'id_usuario': 'ADM001', 'usuario': 'admin', 'password': 'admin123', 'nivel': 1, 'nombre': 'Administrador', 'clientes_asignados': ''},
-            {'id_usuario': 'SUP001', 'usuario': 'supervisor', 'password': 'super123', 'nivel': 2, 'nombre': 'Supervisor', 'clientes_asignados': ''},
-            {'id_usuario': 'ADM002', 'usuario': 'admin_cliente', 'password': 'cliente123', 'nivel': 4, 'nombre': 'Admin Cliente', 'clientes_asignados': ''},
-            {'id_usuario': 'OPE001', 'usuario': 'operario', 'password': 'oper123', 'nivel': 3, 'nombre': 'Operario', 'clientes_asignados': ''}
+            {'id_usuario': 'ADM001', 'usuario': 'admin', 'password_hash': 'admin123', 'nivel': 1, 'nombre': 'Administrador', 'clientes_asignados': ''},
+            {'id_usuario': 'SUP001', 'usuario': 'supervisor', 'password_hash': 'super123', 'nivel': 2, 'nombre': 'Supervisor', 'clientes_asignados': ''},
+            {'id_usuario': 'ADM002', 'usuario': 'admin_cliente', 'password_hash': 'cliente123', 'nivel': 4, 'nombre': 'Admin Cliente', 'clientes_asignados': ''},
+            {'id_usuario': 'OPE001', 'usuario': 'operario', 'password_hash': 'oper123', 'nivel': 3, 'nombre': 'Operario', 'clientes_asignados': ''}
         ])
         escribir_hoja(SHEET_USUARIOS, usuarios_default)
 
@@ -727,7 +637,7 @@ def login():
         
         if st.button("Iniciar Sesión", use_container_width=True):
             df_usuarios = leer_hoja(SHEET_USUARIOS)
-            user_data = df_usuarios[(df_usuarios['usuario'] == usuario) & (df_usuarios['password'] == password)]
+            user_data = df_usuarios[(df_usuarios['usuario'] == usuario) & (df_usuarios['password_hash'] == password)]
             
             if not user_data.empty:
                 st.session_state['logged_in'] = True
@@ -1600,7 +1510,7 @@ def crear_cliente():
                         'id_cliente': id_cliente,
                         'nit': nit,
                         'nombre_cliente': nombre_cliente,
-                        'frentes': json.dumps(frentes) if frentes else json.dumps([]),
+                        'frentes': frentes if frentes else [],
                         'fecha_creacion': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }])
 
@@ -1620,7 +1530,8 @@ def crear_cliente():
         if not df_clientes.empty:
             for idx, row in df_clientes.iterrows():
                 with st.expander(f"🏢 {row.get('nombre_cliente', 'N/A')} - NIT: {row.get('nit', 'N/A')}"):
-                    frentes = json.loads(row.get('frentes', '[]')) if row.get('frentes') else []
+                    frentes_raw = row.get('frentes', [])
+                    frentes = frentes_raw if isinstance(frentes_raw, list) else json.loads(frentes_raw) if frentes_raw else []
                     if frentes:
                         st.write(f"**Frentes:** {', '.join(frentes)}")
                     else:
@@ -1674,7 +1585,8 @@ def crear_vehiculos():
             placa_vehiculo = st.text_input("Placa del Vehículo").upper()
         
         with col3:
-            frentes_cliente = json.loads(df_clientes[df_clientes['nit']==cliente_seleccionado]['frentes'].values[0])
+            frentes_raw = df_clientes[df_clientes['nit']==cliente_seleccionado]['frentes'].values[0]
+            frentes_cliente = frentes_raw if isinstance(frentes_raw, list) else json.loads(frentes_raw) if frentes_raw else []
             if frentes_cliente:
                 frente = st.selectbox("Frente", options=frentes_cliente)
             else:
@@ -1775,9 +1687,10 @@ def crear_llantas():
 
             # Obtener frentes del cliente seleccionado
             frentes_cliente_data = df_clientes[df_clientes['nit']==cliente_seleccionado]['frentes'].values
-            if len(frentes_cliente_data) > 0 and pd.notna(frentes_cliente_data[0]):
+            if len(frentes_cliente_data) > 0 and frentes_cliente_data[0] is not None:
                 try:
-                    frentes_cliente = json.loads(frentes_cliente_data[0])
+                    raw = frentes_cliente_data[0]
+                    frentes_cliente = raw if isinstance(raw, list) else json.loads(raw) if raw else []
                 except:
                     frentes_cliente = []
             else:
@@ -3375,7 +3288,7 @@ def mi_perfil():
 
             # Solo actualizar contraseña si se proporcionó una nueva
             if nueva_password:
-                df_todos.loc[df_todos['usuario'] == nuevo_usuario, 'password'] = nueva_password
+                df_todos.loc[df_todos['usuario'] == nuevo_usuario, 'password_hash'] = nueva_password
 
             escribir_hoja(SHEET_USUARIOS, df_todos)
 
@@ -3445,7 +3358,7 @@ def gestion_usuarios():
                     nuevo_user = pd.DataFrame([{
                         'id_usuario': id_usuario,
                         'usuario': nuevo_usuario,
-                        'password': nueva_password,
+                        'password_hash': nueva_password,
                         'nivel': nuevo_nivel,
                         'nombre': nuevo_nombre,
                         'clientes_asignados': clientes_seleccionados
@@ -3582,7 +3495,7 @@ def gestion_usuarios():
 
                             # Solo actualizar contraseña si se proporcionó una nueva
                             if edit_password:
-                                df_todos.loc[df_todos['usuario'] == edit_usuario, 'password'] = edit_password
+                                df_todos.loc[df_todos['usuario'] == edit_usuario, 'password_hash'] = edit_password
 
                             escribir_hoja(SHEET_USUARIOS, df_todos)
                             st.success("✅ Usuario actualizado con éxito")
