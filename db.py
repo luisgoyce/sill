@@ -98,6 +98,7 @@ def escribir_hoja(nombre_hoja: str, df: pd.DataFrame) -> pd.DataFrame | None:
     """
     try:
         if df is None or df.empty:
+            print(f"[DB] escribir_hoja({nombre_hoja}): DataFrame vacío o None, retornando.")
             return df
 
         sb = get_supabase_client()
@@ -115,6 +116,7 @@ def escribir_hoja(nombre_hoja: str, df: pd.DataFrame) -> pd.DataFrame | None:
 
         # Limpiar DataFrame para serialización
         df_clean = _prepare_for_write(df, nombre_hoja)
+        print(f"[DB] escribir_hoja({nombre_hoja}): {len(df_clean)} filas, columnas: {list(df_clean.columns)}")
 
         # Obtener PKs actuales en la BD
         existing = sb.table(table_name).select(pk).execute()
@@ -122,6 +124,7 @@ def escribir_hoja(nombre_hoja: str, df: pd.DataFrame) -> pd.DataFrame | None:
 
         # PKs en el nuevo DataFrame
         new_pks = set(df_clean[pk].astype(str).values)
+        print(f"[DB] existentes: {len(existing_pks)}, nuevas: {len(new_pks)}, a eliminar: {len(existing_pks - new_pks)}")
 
         # Eliminar filas que ya no existen
         pks_to_delete = existing_pks - new_pks
@@ -132,11 +135,13 @@ def escribir_hoja(nombre_hoja: str, df: pd.DataFrame) -> pd.DataFrame | None:
         # Upsert todas las filas del DataFrame
         records = df_clean.to_dict(orient="records")
         if records:
+            print(f"[DB] Upserting {len(records)} records. Sample: {records[-1]}")
             # Supabase upsert en lotes de 500
             batch_size = 500
             for i in range(0, len(records), batch_size):
                 batch = records[i:i + batch_size]
-                sb.table(table_name).upsert(batch).execute()
+                resp = sb.table(table_name).upsert(batch).execute()
+                print(f"[DB] Upsert batch response: {len(resp.data)} rows returned")
 
         # Retornar datos frescos
         return leer_hoja(nombre_hoja)

@@ -1515,10 +1515,14 @@ def crear_cliente():
                     }])
 
                     df_clientes = pd.concat([df_clientes, nuevo_cliente], ignore_index=True)
-                    escribir_hoja(SHEET_CLIENTES, df_clientes)
-                    st.session_state['cliente_creado'] = True
-                    st.session_state['guardando_cliente'] = False
-                    st.rerun()
+                    resultado = escribir_hoja(SHEET_CLIENTES, df_clientes)
+                    if resultado is None:
+                        st.error("❌ No se pudo guardar el cliente. Revisa los logs.")
+                        st.session_state['guardando_cliente'] = False
+                    else:
+                        st.session_state['cliente_creado'] = True
+                        st.session_state['guardando_cliente'] = False
+                        st.rerun()
     
     with tab2:
         df_clientes = leer_hoja(SHEET_CLIENTES)
