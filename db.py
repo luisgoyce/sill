@@ -240,6 +240,7 @@ def _postprocess(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
 def _prepare_for_write(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
     """Prepara un DataFrame para escritura en Supabase (limpieza de tipos)."""
     import math
+    import numpy as np
     df = df.copy()
 
     # Obtener columnas válidas de la tabla destino
@@ -249,7 +250,8 @@ def _prepare_for_write(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
         # Solo mantener columnas que existen en la tabla
         df = df[[c for c in df.columns if c in valid_cols]]
 
-    # Convertir NaN/None a None (JSON null)
+    # Reemplazar NaN/NaT/None con None de Python (compatible JSON)
+    df = df.replace({np.nan: None, pd.NaT: None})
     df = df.where(df.notna(), None)
 
     # Convertir columnas numéricas
@@ -345,14 +347,28 @@ def _limpiar_clientes_asignados(valor) -> str:
 
 
 def _clean_records(records: list) -> list:
-    """Limpia valores NaN/inf de los records para que sean JSON-serializables."""
+    """Limpia valores NaN/inf/numpy types de los records para que sean JSON-serializables."""
     import math
+    import numpy as np
     cleaned = []
     for record in records:
         clean = {}
         for k, v in record.items():
-            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            if v is None:
                 clean[k] = None
+            elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                clean[k] = None
+            elif isinstance(v, (np.integer,)):
+                clean[k] = int(v)
+            elif isinstance(v, (np.floating,)):
+                val = float(v)
+                clean[k] = None if (math.isnan(val) or math.isinf(val)) else val
+            elif isinstance(v, np.bool_):
+                clean[k] = bool(v)
+            elif isinstance(v, np.ndarray):
+                clean[k] = v.tolist()
+            elif hasattr(v, 'isoformat'):
+                clean[k] = v.isoformat()
             else:
                 clean[k] = v
         cleaned.append(clean)
