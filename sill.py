@@ -1629,10 +1629,13 @@ def crear_vehiculos():
                     }])
                     
                     df_vehiculos = pd.concat([df_vehiculos, nuevo_vehiculo], ignore_index=True)
-                    escribir_hoja(SHEET_VEHICULOS, df_vehiculos)
-                    st.success(f"✅ Vehículo creado con éxito - ID: **{id_vehiculo}**")
-                    st.balloons()
-                    st.rerun()                
+                    resultado = escribir_hoja(SHEET_VEHICULOS, df_vehiculos)
+                    if resultado is None:
+                        st.error("❌ No se pudo guardar el vehículo. Revisa los logs.")
+                    else:
+                        st.success(f"✅ Vehículo creado con éxito - ID: **{id_vehiculo}**")
+                        st.balloons()
+                        st.rerun()                
       
     with tab2:
         df_vehiculos = leer_hoja(SHEET_VEHICULOS)

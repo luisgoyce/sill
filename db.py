@@ -292,6 +292,31 @@ def _prepare_for_write(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
 # Cache de columnas por tabla
 _table_columns_cache: dict = {}
 
+# Columnas conocidas como fallback si la tabla está vacía
+_KNOWN_COLUMNS = {
+    "clientes": {"id_cliente", "nit", "nombre_cliente", "frentes", "fecha_creacion"},
+    "vehiculos": {"id_vehiculo", "nit_cliente", "marca", "linea", "tipologia", "placa_vehiculo",
+                  "frente", "estado", "kilometraje_inicial", "calculo_kms", "fecha_creacion"},
+    "llantas": {"id_llanta", "nit_cliente", "marca_llanta", "referencia", "dimension", "vida_actual",
+                "disponibilidad", "kilometros_totales", "km_ultimo_montaje", "total_regrabaciones",
+                "placa_actual", "posicion_actual", "estado_reencauche", "precio_vida1", "reencauche1",
+                "precio_vida2", "reencauche2", "precio_vida3", "reencauche3", "precio_vida4",
+                "costo_km_vida1", "costo_km_vida2", "costo_km_vida3", "costo_km_vida4",
+                "fecha_creacion", "fecha_modificacion"},
+    "servicios": {"id_servicio", "orden_trabajo", "planilla", "fecha", "id_llanta", "placa_vehiculo",
+                  "posicion", "posicion_nueva", "vida", "tipologia", "tipo_servicio", "disponibilidad",
+                  "kilometraje", "rotacion", "profundidad_1", "profundidad_2", "profundidad_3",
+                  "balanceo", "reparacion", "despinche", "regrabacion", "torqueo", "inspeccion",
+                  "insumos", "comentario_fvu", "observaciones", "nueva_disponibilidad",
+                  "marca_reencauche", "ref_reencauche", "precio_reencauche", "operario",
+                  "usuario_registro", "timestamp"},
+    "usuarios": {"id_usuario", "usuario", "password_hash", "nivel", "nombre", "clientes_asignados"},
+    "alineaciones": {"id_alineacion", "fecha", "placa_vehiculo", "nit_cliente", "kilometraje",
+                     "alineador", "angulo_inicial_izq", "angulo_final_izq",
+                     "angulo_inicial_der", "angulo_final_der", "observaciones",
+                     "usuario_registro", "timestamp"},
+}
+
 def _get_table_columns(table_name: str) -> set | None:
     """Obtiene las columnas de una tabla (cacheado)."""
     if table_name in _table_columns_cache:
@@ -299,16 +324,16 @@ def _get_table_columns(table_name: str) -> set | None:
     try:
         sb = get_supabase_client()
         # Leer una fila para obtener las columnas
-        resp = sb.table(table_name).select("*").limit(0).execute()
-        # Si no hay datos, intentar con limit 1
-        if not resp.data:
-            resp = sb.table(table_name).select("*").limit(1).execute()
+        resp = sb.table(table_name).select("*").limit(1).execute()
         if resp.data:
             cols = set(resp.data[0].keys())
             _table_columns_cache[table_name] = cols
             return cols
     except:
         pass
+    # Fallback a columnas conocidas
+    if table_name in _KNOWN_COLUMNS:
+        return _KNOWN_COLUMNS[table_name]
     return None
 
 
@@ -348,29 +373,34 @@ def _limpiar_clientes_asignados(valor) -> str:
 
 def _clean_records(records: list) -> list:
     """Limpia valores NaN/inf/numpy types de los records para que sean JSON-serializables."""
+    import json
     import math
     import numpy as np
+
+    def _sanitize_value(v):
+        if v is None:
+            return None
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if isinstance(v, (np.floating,)):
+            val = float(v)
+            return None if (math.isnan(val) or math.isinf(val)) else val
+        if isinstance(v, np.bool_):
+            return bool(v)
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        if hasattr(v, 'isoformat'):
+            return v.isoformat()
+        if isinstance(v, (dict, list)):
+            # Recursively sanitize nested structures
+            return json.loads(json.dumps(v, default=str))
+        return v
+
     cleaned = []
     for record in records:
-        clean = {}
-        for k, v in record.items():
-            if v is None:
-                clean[k] = None
-            elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                clean[k] = None
-            elif isinstance(v, (np.integer,)):
-                clean[k] = int(v)
-            elif isinstance(v, (np.floating,)):
-                val = float(v)
-                clean[k] = None if (math.isnan(val) or math.isinf(val)) else val
-            elif isinstance(v, np.bool_):
-                clean[k] = bool(v)
-            elif isinstance(v, np.ndarray):
-                clean[k] = v.tolist()
-            elif hasattr(v, 'isoformat'):
-                clean[k] = v.isoformat()
-            else:
-                clean[k] = v
+        clean = {k: _sanitize_value(v) for k, v in record.items()}
         cleaned.append(clean)
     return cleaned
 
