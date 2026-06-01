@@ -210,13 +210,10 @@ def _postprocess(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Normalizar NITs a string sin decimales
+    # Normalizar NITs a string (preservando ceros iniciales)
     for col in ['nit', 'nit_cliente']:
         if col in df.columns:
-            df[col] = df[col].apply(
-                lambda x: str(int(float(x))) if pd.notna(x) and x != '' and _is_numeric(x)
-                else str(x) if pd.notna(x) else ''
-            )
+            df[col] = df[col].apply(_normalize_nit)
 
     # Limpiar clientes_asignados
     if 'clientes_asignados' in df.columns:
@@ -253,6 +250,11 @@ def _prepare_for_write(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
     # Reemplazar NaN/NaT/None con None de Python (compatible JSON)
     df = df.replace({np.nan: None, pd.NaT: None})
     df = df.where(df.notna(), None)
+
+    # Preservar NITs como strings exactos (no convertir numéricamente)
+    for col in ['nit', 'nit_cliente']:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda x: str(x).strip() if x is not None else None)
 
     # Convertir columnas numéricas
     numeric_cols = ['kilometraje', 'kilometraje_inicial', 'kilometraje_actual',
@@ -337,6 +339,24 @@ def _get_table_columns(table_name: str) -> set | None:
     return None
 
 
+def _normalize_nit(x) -> str:
+    """Normaliza NIT a string preservando ceros iniciales. Solo quita .0 de floats."""
+    if pd.isna(x) or x is None or x == '':
+        return ''
+    # Si es float (ej: 1234567890.0), convertir a int para quitar .0
+    if isinstance(x, float):
+        return str(int(x))
+    # Si es int, convertir a string directo
+    if isinstance(x, int):
+        return str(x)
+    # Si es string, preservar tal cual (no hacer int(float()) que pierde ceros)
+    s = str(x).strip()
+    # Solo quitar .0 si termina en .0 (vino como "1234567890.0")
+    if s.endswith('.0') and s[:-2].isdigit():
+        return s[:-2]
+    return s
+
+
 def _is_numeric(val) -> bool:
     try:
         float(val)
@@ -364,10 +384,8 @@ def _limpiar_clientes_asignados(valor) -> str:
     for nit in valor_str.split(','):
         nit = nit.strip()
         if nit:
-            try:
-                nits.append(str(int(float(nit))))
-            except (ValueError, TypeError):
-                nits.append(nit)
+            # Preservar el NIT como string, solo quitar .0 si aplica
+            nits.append(_normalize_nit(nit))
     return ','.join(nits)
 
 
