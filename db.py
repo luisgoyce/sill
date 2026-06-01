@@ -134,6 +134,8 @@ def escribir_hoja(nombre_hoja: str, df: pd.DataFrame) -> pd.DataFrame | None:
 
         # Upsert todas las filas del DataFrame
         records = df_clean.to_dict(orient="records")
+        # Limpiar NaN/inf que no son JSON-serializables
+        records = _clean_records(records)
         if records:
             print(f"[DB] Upserting {len(records)} records. Sample: {records[-1]}")
             # Supabase upsert en lotes de 500
@@ -185,7 +187,7 @@ def _escribir_movimientos(sb: Client, df: pd.DataFrame) -> pd.DataFrame | None:
 
         # Preparar registros para upsert
         df_serv = _prepare_for_write(df_serv, "servicios")
-        records = df_serv.to_dict(orient="records")
+        records = _clean_records(df_serv.to_dict(orient="records"))
         if records:
             batch_size = 500
             for i in range(0, len(records), batch_size):
@@ -237,6 +239,7 @@ def _postprocess(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
 
 def _prepare_for_write(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
     """Prepara un DataFrame para escritura en Supabase (limpieza de tipos)."""
+    import math
     df = df.copy()
 
     # Obtener columnas válidas de la tabla destino
@@ -339,6 +342,21 @@ def _limpiar_clientes_asignados(valor) -> str:
             except (ValueError, TypeError):
                 nits.append(nit)
     return ','.join(nits)
+
+
+def _clean_records(records: list) -> list:
+    """Limpia valores NaN/inf de los records para que sean JSON-serializables."""
+    import math
+    cleaned = []
+    for record in records:
+        clean = {}
+        for k, v in record.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                clean[k] = None
+            else:
+                clean[k] = v
+        cleaned.append(clean)
+    return cleaned
 
 
 def _ensure_json_list(val):
