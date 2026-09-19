@@ -226,6 +226,14 @@ def _postprocess(df: pd.DataFrame, nombre_hoja: str) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].apply(lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != 'nan' else '')
 
+    # La app existente representa los booleanos como "Sí"/"No", mientras
+    # que PostgreSQL/Supabase los devuelve como True/False.
+    bool_cols = ['balanceo', 'reparacion', 'despinche', 'regrabacion',
+                 'torqueo', 'inspeccion', 'rotacion', 'activo']
+    for col in bool_cols:
+        if col in df.columns:
+            df[col] = df[col].apply(lambda value: 'Sí' if bool(value) else 'No')
+
     # Para movimientos: renombrar columnas de la vista para compatibilidad
     if nombre_hoja == "movimientos":
         rename_back = {v: k for k, v in MOV_TO_SERV_COLUMNS.items()}
