@@ -1545,6 +1545,23 @@ def crear_cliente():
             st.info("No hay clientes registrados o no tienes acceso")
 
 # ============= FUNCIÓN 2: GESTIÓN DE VEHÍCULOS =============
+@st.cache_data(ttl=300, show_spinner=False)
+def cargar_catalogo_tipologias():
+    """Carga las tipologías disponibles desde Supabase."""
+    respuesta = (
+        get_supabase_client()
+        .table("catalogo_tipologias")
+        .select("tipologia")
+        .execute()
+    )
+    tipologias = {}
+    for fila in respuesta.data:
+        valor = str(fila.get("tipologia") or "").strip()
+        if valor:
+            tipologias.setdefault(valor.casefold(), valor)
+    return sorted(tipologias.values(), key=str.casefold)
+
+
 def crear_vehiculos():
     """Función para crear vehículos asociados a cliente y frente"""
     
@@ -1553,6 +1570,13 @@ def crear_vehiculos():
     
     if not verificar_permiso(2):
         return
+
+    error_catalogo_tipologias = None
+    try:
+        tipologias_disponibles = cargar_catalogo_tipologias()
+    except Exception as error:
+        tipologias_disponibles = []
+        error_catalogo_tipologias = error
     
     df_clientes = leer_hoja(SHEET_CLIENTES)
     
@@ -1570,6 +1594,11 @@ def crear_vehiculos():
         
         col1, col2, col3 = st.columns(3)
 
+        if error_catalogo_tipologias:
+            st.error(f"No se pudo leer el catálogo de tipologías en Supabase: {error_catalogo_tipologias}")
+        elif not tipologias_disponibles:
+            st.warning("No hay tipologías disponibles en catalogo_tipologias.")
+
         with col1:
             cliente_seleccionado = st.selectbox(
                 "Cliente",
@@ -1585,7 +1614,10 @@ def crear_vehiculos():
         
         with col2:
             linea = st.text_input("Línea (ej: Cascadia)")
-            tipologia = st.selectbox("Tipología", ["Camión", "Tractomula", "Volqueta", "Turbo", "Sencillo", "Otro"])
+            tipologia = (
+                st.selectbox("Tipología", options=tipologias_disponibles)
+                if tipologias_disponibles else ""
+            )
             placa_vehiculo = st.text_input("Placa del Vehículo").upper()
         
         with col3:
@@ -1601,7 +1633,7 @@ def crear_vehiculos():
         
         calculo_kms = st.selectbox("Cálculo de Kilómetros", ["odometro", "promedio", "tabla"])
         
-        if st.button("💾 Registrar Vehículo", type="primary"):
+        if st.button("💾 Registrar Vehículo", type="primary", disabled=not tipologias_disponibles):
             if not placa_vehiculo or not marca or not linea:
                 st.error("Debes completar todos los campos obligatorios")
             else:
@@ -1651,6 +1683,31 @@ def crear_vehiculos():
             st.info("No hay vehículos registrados o no tienes acceso")
 
 # ============= FUNCIÓN 3: GESTIÓN DE LLANTAS =============
+@st.cache_data(ttl=300, show_spinner=False)
+def cargar_catalogo_llantas():
+    """Carga las combinaciones de marca, referencia y dimensión desde Supabase."""
+    respuesta = (
+        get_supabase_client()
+        .table("catalogo_llantas")
+        .select("marca,referencia,dimension")
+        .execute()
+    )
+    columnas = ["marca", "referencia", "dimension"]
+    catalogo = pd.DataFrame(respuesta.data, columns=columnas)
+    if catalogo.empty:
+        return catalogo
+
+    for columna in columnas:
+        catalogo[columna] = catalogo[columna].fillna("").astype(str).str.strip()
+
+    return (
+        catalogo.loc[catalogo[columnas].ne("").all(axis=1)]
+        .drop_duplicates(subset=columnas)
+        .sort_values(columnas, key=lambda serie: serie.str.casefold())
+        .reset_index(drop=True)
+    )
+
+
 def crear_llantas():
     """Función para crear llantas y asociarlas a clientes"""
     
@@ -1662,6 +1719,12 @@ def crear_llantas():
     
     df_clientes = leer_hoja(SHEET_CLIENTES)
     df_llantas = leer_hoja(SHEET_LLANTAS)
+
+    try:
+        df_catalogo = cargar_catalogo_llantas()
+    except Exception as error:
+        st.error(f"No se pudo leer el catálogo de llantas en Supabase: {error}")
+        df_catalogo = pd.DataFrame(columns=["marca", "referencia", "dimension"])
     
     clientes_acceso = obtener_clientes_accesibles()
     df_clientes = filtrar_por_clientes(df_clientes, 'nit', clientes_acceso)
@@ -1669,6 +1732,15 @@ def crear_llantas():
     if df_clientes.empty:
         st.warning("⚠️ Primero debes crear un cliente o no tienes acceso")
         return
+
+    def valores_unicos_ci(serie):
+        valores = {}
+        for valor in serie:
+            if valor:
+                valores.setdefault(valor.casefold(), valor)
+        return sorted(valores.values(), key=str.casefold)
+
+    marcas_catalogo = valores_unicos_ci(df_catalogo["marca"])
     
     tab1, tab2 = st.tabs(["➕ Registrar Llanta", "📋 Ver Llantas"])
     
@@ -1708,11 +1780,30 @@ def crear_llantas():
             else:
                 frente_llanta = st.text_input("Frente (sin frentes definidos)", value="General", key="llanta_frente_txt")
 
-            marca_llanta = st.text_input("Marca de Llanta")
-            referencia = st.text_input("Diseño (ej: XZA2)")
+            if marcas_catalogo:
+                marca_llanta = st.selectbox("Marca de Llanta", options=marcas_catalogo, key="llanta_marca")
+                catalogo_marca = df_catalogo[
+                    df_catalogo["marca"].str.casefold() == marca_llanta.casefold()
+                ]
+                referencias_catalogo = valores_unicos_ci(catalogo_marca["referencia"])
+                referencia = st.selectbox(
+                    "Diseño (referencia)", options=referencias_catalogo, key="llanta_referencia"
+                )
+            else:
+                st.warning("No hay marcas disponibles en catalogo_llantas.")
+                marca_llanta = referencia = ""
 
         with col2:
-            dimension = st.text_input("Dimensión (ej: 295/80R22.5)")
+            if marcas_catalogo:
+                catalogo_referencia = catalogo_marca[
+                    catalogo_marca["referencia"].str.casefold() == referencia.casefold()
+                ]
+                dimensiones_catalogo = valores_unicos_ci(catalogo_referencia["dimension"])
+                dimension = st.selectbox(
+                    "Dimensión", options=dimensiones_catalogo, key="llanta_dimension"
+                )
+            else:
+                dimension = ""
 
             # ID del usuario (opcional) - el sistema generará un ID único
             id_llanta_usuario = st.text_input("ID Llanta (opcional)", placeholder="Ej: L01, 123, etc.")
