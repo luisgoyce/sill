@@ -9,6 +9,7 @@ __pycache__/
 data/
 *.xlsx
 *.xls
+*.csv
 
 # Virtual environments
 .venv/
